@@ -21,7 +21,7 @@ import os
 import sys
 
 sys.path.append("./openvla-clip-rt")
-sys.path.append("./LIBERO")
+sys.path.append("./openvla-clip-rt/LIBERO")
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,52 +56,55 @@ from experiments.robot.robot_utils import (
     get_clip_rt_action,
 )
 
-tasksn = input("task suite name ... ")
-data_portion = int(input("1 for full data, n for 1/n data ... "))
-save_data_ = input("Save video data? [y/n]")
-model_ckpt = input("insert model ckpt number ... ")
-
 
 @dataclass
 class GenerateConfig:
-    # fmt: off
-
     #################################################################################################################
     # Model-specific parameters
     #################################################################################################################
-    model_family: str = "clip_rt"                    # Model family
-    pretrained_checkpoint: Union[str, Path] = ""     # Pretrained checkpoint path
-    load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
-    load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
+    model_family: str = "clip_rt"  # Model family
+    pretrained_checkpoint: Union[str, Path] = ""  # Pretrained checkpoint path
+    load_in_8bit: bool = False  # (For OpenVLA only) Load with 8-bit quantization
+    load_in_4bit: bool = False  # (For OpenVLA only) Load with 4-bit quantization
 
-    center_crop: bool = True                         # Center crop? (if trained w/ random crop image aug)
+    center_crop: bool = True  # Center crop? (if trained w/ random crop image aug)
 
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
-    task_suite_name: str = tasksn #"libero_spatial"          # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
-    num_steps_wait: int = 10                         # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_task: int = 50                    # Number of rollouts per task
+    task_suite_name: str = (
+        "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+    )
+    num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
+    num_trials_per_task: int = 50  # Number of rollouts per task
+
+    #################################################################################################################
+    # CLIP-RT environment-specific parameters
+    #################################################################################################################
+    data_portion: int = 1
+    save_video: str = "y"
+    model_ckpt: str = "0"
+    model_path: str = "./checkpoints/{}_top/epoch_{}.pt".format(
+        task_suite_name.split("_")[-1], model_ckpt
+    )
 
     #################################################################################################################
     # Utils
     #################################################################################################################
-    run_id_note: Optional[str] = None                # Extra note to add in run ID for logging
-    local_log_dir: str = "./experiments/logs/{}/{}".format(tasksn, model_ckpt)        # Local directory for eval logs
+    run_id_note: Optional[str] = None  # Extra note to add in run ID for logging
+    local_log_dir: str = "./experiments/logs/{}/{}".format(
+        task_suite_name, model_ckpt
+    )  # Local directory for eval logs
 
-    use_wandb: bool = True                          # Whether to also log results in Weights & Biases
-    wandb_project: str = "libero-eval-0.0.1"        # Name of W&B project to log to (use default!)
-    wandb_entity: str = "ngseo-seoul-national-university"         # Name of entity to log under
+    use_wandb: bool = False  # Whether to also log results in Weights & Biases
+    wandb_project: str = ""  # Name of W&B project to log to (use default!)
+    wandb_entity: str = ""  # Name of entity to log under
 
-    seed: int = 7                                    # Random Seed (for reproducibility)
-
-    # fmt: on
+    seed: int = 7  # Random Seed (for reproducibility)
 
 
 @draccus.wrap()
 def eval_libero(cfg: GenerateConfig) -> None:
-    
-    
     print(cfg.model_family)
     assert (
         cfg.pretrained_checkpoint is not None
@@ -120,29 +123,14 @@ def eval_libero(cfg: GenerateConfig) -> None:
     # [OpenVLA] Set action un-normalization key
     cfg.unnorm_key = cfg.task_suite_name
 
-    # Load model
-    if cfg.model_family == "openvla":
-        model = get_model(cfg)
-
-    # [OpenVLA] Check that the model contains the action un-normalization key
-    if cfg.model_family == "openvla":
-        # In some cases, the key must be manually modified (e.g. after training on a modified version of the dataset
-        # with the suffix "_no_noops" in the dataset name)
-        if (
-            cfg.unnorm_key not in model.norm_stats
-            and f"{cfg.unnorm_key}_no_noops" in model.norm_stats
-        ):
-            cfg.unnorm_key = f"{cfg.unnorm_key}_no_noops"
-        assert (
-            cfg.unnorm_key in model.norm_stats
-        ), f"Action un-norm key {cfg.unnorm_key} not found in VLA `norm_stats`!"
-
     # [OpenVLA] Get Hugging Face processor
     processor = None
-    if cfg.model_family == "openvla":
-        processor = get_processor(cfg)
-    elif cfg.model_family == "clip_rt":
-        model, preprocess, action_classes, lookup_table = get_clip_rt(model_path="./checkpoints/{}_top/epoch_{}.pt".format(tasksn.split("_")[-1], model_ckpt), task_split=tasksn)
+
+    if cfg.model_family == "clip_rt":
+        model, preprocess, action_classes, lookup_table = get_clip_rt(
+            model_path=cfg.model_path,
+            task_split=cfg.task_suite_name,
+        )
         tokenizer = get_tokenizer()
 
     # Initialize local logging
@@ -180,9 +168,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         ssssss += 1
-        if ssssss not in [3,4]:
+        if ssssss not in [3, 4]:
             continue
-        
+
         print(f"Task {task_id} of {num_tasks_in_suite}")
         # Get task
         task = task_suite.get_task(task_id)
@@ -196,7 +184,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
-            if episode_idx%data_portion != 0: 
+            if episode_idx % cfg.data_portion != 0:
                 continue
             print(f"\nTask: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
@@ -327,10 +315,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
             total_episodes += 1
 
             # Save a replay video of the episode
-            if save_data_ == 'y':
+            if cfg.save_video == "y":
                 save_rollout_video(
                     cfg.task_suite_name,
-                    model_ckpt,
+                    cfg.model_ckpt,
                     replay_images,
                     total_episodes,
                     success=done,
@@ -339,10 +327,15 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 )
             if cfg.model_family == "clip_rt":
                 import json
-                os.makedirs(f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/", exist_ok=True)
+
+                os.makedirs(
+                    f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/",
+                    exist_ok=True,
+                )
 
                 with open(
-                    f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/actions_{task_description}_{episode_idx}.json", "w"
+                    f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/actions_{task_description}_{episode_idx}.json",
+                    "w",
                 ) as f:
                     json.dump(actions, f, indent=4)
 
@@ -353,7 +346,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
             )
             print("model epoch_{}".format(model_ckpt))
-            
+
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(
