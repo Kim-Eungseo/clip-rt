@@ -236,16 +236,28 @@ class CLIP(nn.Module):
 
         self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
 
-        text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
-        self.transformer = text.transformer
-        self.context_length = text.context_length
-        self.vocab_size = text.vocab_size
-        self.token_embedding = text.token_embedding
-        self.positional_embedding = text.positional_embedding
-        self.ln_final = text.ln_final
-        self.text_projection = text.text_projection
-        self.text_pool_type = text.pool_type
-        self.register_buffer('attn_mask', text.attn_mask, persistent=False)
+        self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
+        self.transformer = self.text.transformer
+        self.context_length = self.text.context_length
+        self.vocab_size = self.text.vocab_size
+        self.token_embedding = self.text.token_embedding
+        self.positional_embedding = self.text.positional_embedding
+        self.ln_final = self.text.ln_final
+        self.text_projection = self.text.text_projection
+        self.text_pool_type = self.text.pool_type
+        self.register_buffer('attn_mask', self.text.attn_mask, persistent=False)
+
+        # copying the original text encoder
+        self.text2 = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
+        self.transformer2 = self.text2.transformer
+        self.context_length2 = self.text2.context_length
+        self.vocab_size2 = self.text2.vocab_size
+        self.token_embedding2 = self.text2.token_embedding
+        self.positional_embedding2 = self.text2.positional_embedding
+        self.ln_final2 = self.text2.ln_final
+        self.text_projection2 = self.text2.text_projection
+        self.text_pool_type2 = self.text2.pool_type
+
 
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         if init_logit_bias is not None:
@@ -285,6 +297,26 @@ class CLIP(nn.Module):
 
         return F.normalize(x, dim=-1) if normalize else x
 
+    def encode_text2(self, text, normalize: bool = False):
+        cast_dtype = self.transformer2.get_cast_dtype()
+
+        x = self.token_embedding2(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+
+        x = x + self.positional_embedding2.to(cast_dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer2(x, attn_mask=self.attn_mask)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final2(x)  # [batch_size, n_ctx, transformer.width]
+        x, _ = text_global_pool(x, text, self.text_pool_type)
+        if self.text_projection2 is not None:
+            if isinstance(self.text_projection2, nn.Linear):
+                x = self.text_projection2(x)
+            else:
+                x = x @ self.text_projection2
+        return F.normalize(x, dim=-1) if normalize else x
+    
+    
+    
     def get_logits(self, image, text):
         image_features = self.encode_image(image, normalize=True)
         text_features = self.encode_text(text, normalize=True)
@@ -300,9 +332,9 @@ class CLIP(nn.Module):
             text: Optional[torch.Tensor] = None,
             text_supervision: Optional[torch.Tensor] = None,
     ):
-        image_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
-        text_supervision_features = self.encode_text(text_supervision, normalize=True) if text_supervision is not None else None
+        image_features = self.encode_image(image, normalize=False) if image is not None else None
+        text_features = self.encode_text(text, normalize=False) if text is not None else None
+        text_supervision_features = self.encode_text2(text_supervision, normalize=False) if text_supervision is not None else None
 
         if self.output_dict:
             out_dict = {
@@ -319,7 +351,6 @@ class CLIP(nn.Module):
         if self.logit_bias is not None:
             return image_features, text_features, self.logit_scale.exp(), self.logit_bias
         return image_features, text_features, self.logit_scale.exp()
-
 
 class CustomTextCLIP(nn.Module):
     output_dict: torch.jit.Final[bool]

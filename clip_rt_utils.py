@@ -42,8 +42,9 @@ def get_clip_rt(
 
     # Load action lookup table
     
+    kmeans_num = model_path.split("kmeans_")[-1].split("_epoch")[0]
     lookup_table = json.load(
-        open("json_inference/inference/{}_command_to_action.json".format(task_split))
+        open("json_inference/inference/{}_command_to_action_kmeans_{}.json".format(task_split, kmeans_num))
     )
     action_classes = list(lookup_table.keys())
 
@@ -83,7 +84,7 @@ def _get_clip_rt_action(
         image_features = model.encode_image(image)
         inst_features = model.encode_text(inst)
         context_features = image_features + inst_features
-        action_features = model.encode_text(actions)
+        action_features = model.encode_text2(actions)
 
         context_features /= context_features.norm(dim=-1, keepdim=True)
         action_features /= action_features.norm(dim=-1, keepdim=True)
@@ -107,8 +108,8 @@ def _get_clip_rt_action(
                 i
                 for i, act in enumerate(action_classes)
                 if (
-                    "move the arm to my right" in act
-                    or "move the arm to my left" in act
+                    "move the arm to your right" in act
+                    or "move the arm to your left" in act
                     or "left or right" in act
                 )
             ],
@@ -154,6 +155,8 @@ def _get_clip_rt_action(
             final_vector[-2] = 0.0
             final_vector[-3] = 0.0
             final_vector[-4] = 0.0
+            final_vector[0] = 0.0
+            final_vector[1] = 0.0
 
         pred = final_vector.tolist()
 

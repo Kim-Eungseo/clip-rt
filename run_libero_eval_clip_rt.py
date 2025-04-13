@@ -80,11 +80,12 @@ class GenerateConfig:
     #################################################################################################################
     # CLIP-RT environment-specific parameters
     #################################################################################################################
-    data_portion: int = 1
+    data_portion: int = 10
     save_video: str = "y"
-    model_ckpt: str = "0"
-    model_path: str = "./checkpoints/{}_top/epoch_{}.pt".format(
-        task_suite_name.split("_")[-1], model_ckpt
+    model_ckpt: str = "1"
+    model_kmeans: int = 32
+    model_path: str = "./checkpoints/cliprt_libero_{}_kmeans_{}_epoch_{}.pt".format(
+        task_suite_name.split("_")[-1], model_kmeans, model_ckpt
     )
 
     #################################################################################################################
@@ -166,9 +167,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
     ssssss = 0
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
-        ssssss += 1
-        if ssssss not in [3, 4]:
-            continue
+        # ssssss += 1
+        # if ssssss not in [3, 4]:
+        #     continue
 
         print(f"Task {task_id} of {num_tasks_in_suite}")
         # Get task
