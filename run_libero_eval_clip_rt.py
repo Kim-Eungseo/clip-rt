@@ -56,6 +56,11 @@ from experiments.robot.robot_utils import (
     get_clip_rt_action,
 )
 
+tasksn = input("task suite name ... ")
+data_portion = int(input("1 for full data, n for 1/n data ... "))
+save_data_ = input("Save video data? [y/n]")
+model_ckpt = input("insert model ckpt number ... ")
+
 
 @dataclass
 class GenerateConfig:
@@ -74,7 +79,7 @@ class GenerateConfig:
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
-    task_suite_name: str = "libero_spatial"          # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+    task_suite_name: str = tasksn #"libero_spatial"          # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     num_steps_wait: int = 10                         # Number of steps to wait for objects to stabilize in sim
     num_trials_per_task: int = 50                    # Number of rollouts per task
 
@@ -82,7 +87,7 @@ class GenerateConfig:
     # Utils
     #################################################################################################################
     run_id_note: Optional[str] = None                # Extra note to add in run ID for logging
-    local_log_dir: str = "./experiments/logs"        # Local directory for eval logs
+    local_log_dir: str = "./experiments/logs/{}/{}".format(tasksn, model_ckpt)        # Local directory for eval logs
 
     use_wandb: bool = True                          # Whether to also log results in Weights & Biases
     wandb_project: str = "libero-eval-0.0.1"        # Name of W&B project to log to (use default!)
@@ -95,6 +100,8 @@ class GenerateConfig:
 
 @draccus.wrap()
 def eval_libero(cfg: GenerateConfig) -> None:
+    
+    
     print(cfg.model_family)
     assert (
         cfg.pretrained_checkpoint is not None
@@ -135,7 +142,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
     if cfg.model_family == "openvla":
         processor = get_processor(cfg)
     elif cfg.model_family == "clip_rt":
-        model, preprocess, action_classes, lookup_table = get_clip_rt()
+        model, preprocess, action_classes, lookup_table = get_clip_rt(model_path="./checkpoints/{}_top/epoch_{}.pt".format(tasksn.split("_")[-1], model_ckpt), task_split=tasksn)
         tokenizer = get_tokenizer()
 
     # Initialize local logging
@@ -169,8 +176,13 @@ def eval_libero(cfg: GenerateConfig) -> None:
         resize_size = 224
 
     # Start evaluation
+    ssssss = 0
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite - 2, 0, -1)):
+    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+        ssssss += 1
+        if ssssss not in [3,4]:
+            continue
+        
         print(f"Task {task_id} of {num_tasks_in_suite}")
         # Get task
         task = task_suite.get_task(task_id)
@@ -184,6 +196,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
+            if episode_idx%data_portion != 0: 
+                continue
             print(f"\nTask: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
 
@@ -209,6 +223,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             print(f"Starting episode {task_episodes+1}...")
             log_file.write(f"Starting episode {task_episodes+1}...\n")
+
+            actions = []
+
+            prev_action = None
+            repeat_count = 0
 
             while t < max_steps + cfg.num_steps_wait:
                 try:
@@ -249,6 +268,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
                             task_description,
                             processor=processor,
                         )
+                        # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
+                        action = normalize_gripper_action(action, binarize=True)
                     elif cfg.model_family == "clip_rt":
                         action = get_clip_rt_action(
                             model,
@@ -259,11 +280,24 @@ def eval_libero(cfg: GenerateConfig) -> None:
                             observation,
                             task_description,
                         )
+                        # HANDLING REPEATING ACTION
+                        # if prev_action is not None and np.allclose(
+                        #     action, prev_action, atol=1e-10
+                        # ):
+                        #     repeat_count += 1
+                        # else:
+                        #     repeat_count = 1
+                        # prev_action = action.copy()
+
+                        # if repeat_count >= 15:
+                        #     print("REPEATING ACTIONS!!!!!")
+                        #     action = np.array([-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+                        #     for dumb in range(15):
+                        #         obs, reward, done, info = env.step(action.tolist())
+                        #     repeat_count == 0
                         print(f"Action: {action}")
                         log_file.write(f"Action: {action}\n")
-
-                    # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
-                    action = normalize_gripper_action(action, binarize=True)
+                        actions.append(action.tolist())
 
                     # [OpenVLA] The dataloader flips the sign of the gripper action to align with other datasets
                     # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
@@ -293,13 +327,24 @@ def eval_libero(cfg: GenerateConfig) -> None:
             total_episodes += 1
 
             # Save a replay video of the episode
-            save_rollout_video(
-                replay_images,
-                total_episodes,
-                success=done,
-                task_description=task_description,
-                log_file=log_file,
-            )
+            if save_data_ == 'y':
+                save_rollout_video(
+                    cfg.task_suite_name,
+                    model_ckpt,
+                    replay_images,
+                    total_episodes,
+                    success=done,
+                    task_description=task_description,
+                    log_file=log_file,
+                )
+            if cfg.model_family == "clip_rt":
+                import json
+                os.makedirs(f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/", exist_ok=True)
+
+                with open(
+                    f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/actions_{task_description}_{episode_idx}.json", "w"
+                ) as f:
+                    json.dump(actions, f, indent=4)
 
             # Log current results
             print(f"Success: {done}")
@@ -307,11 +352,14 @@ def eval_libero(cfg: GenerateConfig) -> None:
             print(
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
             )
+            print("model epoch_{}".format(model_ckpt))
+            
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
+            log_file.write("model epoch_{}\n".format(model_ckpt))
             log_file.flush()
 
         # Log final results
