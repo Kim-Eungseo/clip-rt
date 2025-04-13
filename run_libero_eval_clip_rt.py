@@ -43,13 +43,12 @@ from experiments.robot.libero.libero_utils import (
     quat2axisangle,
     save_rollout_video,
 )
-from experiments.robot.openvla_utils import get_processor
+
 from clip_rt_utils import get_clip_rt, get_tokenizer
 from experiments.robot.robot_utils import (
     DATE_TIME,
     get_action,
     get_image_resize_size,
-    get_model,
     invert_gripper_action,
     normalize_gripper_action,
     set_seed_everywhere,
@@ -329,12 +328,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 import json
 
                 os.makedirs(
-                    f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/",
+                    f"./actions/{cfg.task_suite_name}/epoch_{cfg.model_ckpt}/",
                     exist_ok=True,
                 )
 
                 with open(
-                    f"./actions/{cfg.task_suite_name}/epoch_{model_ckpt}/actions_{task_description}_{episode_idx}.json",
+                    f"./actions/{cfg.task_suite_name}/epoch_{cfg.model_ckpt}/actions_{task_description}_{episode_idx}.json",
                     "w",
                 ) as f:
                     json.dump(actions, f, indent=4)
@@ -345,14 +344,14 @@ def eval_libero(cfg: GenerateConfig) -> None:
             print(
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
             )
-            print("model epoch_{}".format(model_ckpt))
+            print("model epoch_{}".format(cfg.model_ckpt))
 
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
-            log_file.write("model epoch_{}\n".format(model_ckpt))
+            log_file.write("model epoch_{}\n".format(cfg.model_ckpt))
             log_file.flush()
 
         # Log final results
