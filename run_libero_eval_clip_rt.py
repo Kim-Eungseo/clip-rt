@@ -20,7 +20,7 @@ Usage:
 import os
 import sys
 
-sys.path.append("./openvla")
+sys.path.append("./openvla-clip-rt")
 sys.path.append("./LIBERO")
 
 from dataclasses import dataclass
