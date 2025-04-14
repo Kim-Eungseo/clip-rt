@@ -68,7 +68,8 @@ def _get_clip_rt_action(
     lookup_table,
     image: Image.Image,
     task_label: str,
-    device=DEVICE,
+    zero_action_exception: bool,
+    device=DEVICE
 ) -> list[float]:
     """Generates an action with the CLIP-RT policy."""
 
@@ -141,22 +142,23 @@ def _get_clip_rt_action(
             final_vector += action_vector
 
         # 만약 최종 벡터의 모든 element가 0.0이면 두 번째로 높은 확률 액션으로 재계산
-        if np.all(final_vector[:-1] == 0.0):
-            print("!!!zero action!!!\n inferring the second best action...")
-            final_vector = np.zeros(7)
-            for group_name, indices in groups.items():
-                group_probs = action_probs_np[indices]
-                sorted_indices = np.argsort(group_probs)[::-1]
-                second_best_idx = indices[sorted_indices[1]]
-                action_str = action_classes[second_best_idx]
-                action_vector = np.array(json.loads(lookup_table[action_str]))
-                final_vector += action_vector
-            final_vector[-1] = 0.0
-            final_vector[-2] = 0.0
-            final_vector[-3] = 0.0
-            final_vector[-4] = 0.0
-            final_vector[0] = 0.0
-            final_vector[1] = 0.0
+        if zero_action_exception:
+            if np.all(final_vector[:-1] == 0.0):
+                print("!!!zero action!!!\n inferring the second best action...")
+                final_vector = np.zeros(7)
+                for group_name, indices in groups.items():
+                    group_probs = action_probs_np[indices]
+                    sorted_indices = np.argsort(group_probs)[::-1]
+                    second_best_idx = indices[sorted_indices[1]]
+                    action_str = action_classes[second_best_idx]
+                    action_vector = np.array(json.loads(lookup_table[action_str]))
+                    final_vector += action_vector
+                final_vector[-1] = 0.0
+                final_vector[-2] = 0.0
+                final_vector[-3] = 0.0
+                final_vector[-4] = 0.0
+                # final_vector[0] = 0.0
+                # final_vector[1] = 0.0
 
         pred = final_vector.tolist()
 

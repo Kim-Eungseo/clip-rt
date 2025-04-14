@@ -84,17 +84,26 @@ class GenerateConfig:
     save_video: str = "y"
     model_ckpt: str = "1"
     model_kmeans: int = 32
-    model_path: str = "./checkpoints/cliprt_libero_{}_kmeans_{}_epoch_{}.pt".format(
-        task_suite_name.split("_")[-1], model_kmeans, model_ckpt
-    )
-
+    zero_action_exception: bool = True
+    del_zero_action: bool = True
+    # model_path: str = "./checkpoints/cliprt_libero_{}_kmeans_{}_epoch_{}.pt".format(
+    #     task_suite_name.split("_")[-1], model_kmeans, model_ckpt
+    # )
+    @property
+    def model_path(self) -> str:
+        if self.del_zero_action:
+            return "./checkpoints/cliprt_libero_{}_kmeans_{}_epoch_{}_nonzero.pt".format(
+                self.task_suite_name.split("_")[-1], self.model_kmeans, self.model_ckpt
+            )
+        else:
+            return "./checkpoints/cliprt_libero_{}_kmeans_{}_epoch_{}.pt".format(
+                self.task_suite_name.split("_")[-1], self.model_kmeans, self.model_ckpt
+            )
     #################################################################################################################
     # Utils
     #################################################################################################################
     run_id_note: Optional[str] = None  # Extra note to add in run ID for logging
-    local_log_dir: str = "./experiments/logs/{}/{}".format(
-        task_suite_name, model_ckpt
-    )  # Local directory for eval logs
+    local_log_dir: str = "./experiments/logs"  # Local directory for eval logs
 
     use_wandb: bool = False  # Whether to also log results in Weights & Biases
     wandb_project: str = ""  # Name of W&B project to log to (use default!)
@@ -104,8 +113,18 @@ class GenerateConfig:
 
 
 @draccus.wrap()
+
 def eval_libero(cfg: GenerateConfig) -> None:
-    print(cfg.model_family)
+    lines = []
+    lines.append(str(cfg.model_family))
+    lines.append(f"model epoch: {cfg.model_ckpt}")
+    lines.append(f"K-means: {cfg.model_kmeans}")
+    lines.append(f"Model path: {cfg.model_path}")
+    lines.append(f"Data portion: {100 / cfg.data_portion}%")
+    lines.append(f"Zero action exception: {cfg.zero_action_exception}")
+
+    print("\n".join(lines))
+    
     assert (
         cfg.pretrained_checkpoint is not None
     ), "cfg.pretrained_checkpoint must not be None!"
@@ -134,11 +153,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
         tokenizer = get_tokenizer()
 
     # Initialize local logging
-    run_id = f"EVAL-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
+    run_id = f"EVAL-{cfg.model_family}-{cfg.model_path.split("epoch_")[-1]}-{DATE_TIME}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
-    os.makedirs(cfg.local_log_dir, exist_ok=True)
-    local_log_filepath = os.path.join(cfg.local_log_dir, run_id + ".txt")
+    log_dir = os.path.join(cfg.local_log_dir,cfg.task_suite_name,cfg.model_kmeans)
+    os.makedirs(log_dir, exist_ok=True)
+    local_log_filepath = os.path.join(log_dir, run_id + ".txt")
     log_file = open(local_log_filepath, "w")
     print(f"Logging to local log file: {local_log_filepath}")
 
@@ -267,6 +287,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                             lookup_table,
                             observation,
                             task_description,
+                            zero_action_exception = cfg.zero_action_exception
                         )
                         # HANDLING REPEATING ACTION
                         # if prev_action is not None and np.allclose(
@@ -377,7 +398,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     f"num_episodes/{task_description}": task_episodes,
                 }
             )
-
+    print("\n".join(lines))
+    log_file.write("\n".join(lines))
+    log_file.flush()
     # Save local log file
     log_file.close()
 
