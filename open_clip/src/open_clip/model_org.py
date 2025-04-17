@@ -217,52 +217,6 @@ def _build_text_tower(
     return text
 
 
-class MLPResNetBlock(nn.Module):
-    """One MLP ResNet block with a residual connection."""
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-        self.ffn = nn.Sequential(  # feedforward network, similar to the ones in Transformers
-            nn.LayerNorm(dim),
-            nn.Linear(dim, dim),
-            nn.ReLU(),
-        )
-
-    def forward(self, x):
-        # x: (batch_size, hidden_dim)
-        # We follow the module ordering of "Pre-Layer Normalization" feedforward networks in Transformers as
-        # described here: https://arxiv.org/pdf/2002.04745.pdf
-        identity = x
-        x = self.ffn(x)
-        x = x + identity
-        return x
-
-
-class MLPResNet(nn.Module):
-    """MLP with residual connection blocks."""
-    def __init__(self, num_blocks, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.layer_norm1 = nn.LayerNorm(input_dim)
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.relu = nn.ReLU()
-        self.mlp_resnet_blocks = nn.ModuleList()
-        for _ in range(num_blocks):
-            self.mlp_resnet_blocks.append(MLPResNetBlock(dim=hidden_dim))
-        self.layer_norm2 = nn.LayerNorm(hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x):
-        # x: (batch_size, input_dim)
-        x = self.layer_norm1(x)  # shape: (batch_size, input_dim)
-        x = self.fc1(x)  # shape: (batch_size, hidden_dim)
-        x = self.relu(x)  # shape: (batch_size, hidden_dim)
-        for block in self.mlp_resnet_blocks:
-            x = block(x)  # shape: (batch_size, hidden_dim)
-        x = self.layer_norm2(x)  # shape: (batch_size, hidden_dim)
-        x = self.fc2(x)  # shape: (batch_size, output_dim)
-        return x
-
-
 class CLIP(nn.Module):
     output_dict: torch.jit.Final[bool]
 
@@ -280,12 +234,7 @@ class CLIP(nn.Module):
         super().__init__()
         self.output_dict = output_dict
 
-        #vision_cfg['pool_type'] = 'none'
-        #vision_cfg['attentional_pool'] = False
         self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
-
-        #text_cfg['pool_type'] = 'none'
-        #text_cfg['embed_cls'] = False
 
         self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
         self.transformer = self.text.transformer
@@ -297,16 +246,9 @@ class CLIP(nn.Module):
         self.text_projection = self.text.text_projection
         self.text_pool_type = self.text.pool_type
         self.register_buffer('attn_mask', self.text.attn_mask, persistent=False)
-		
-		# copying the original text encoder
-        text_cfg2 = copy.deepcopy(text_cfg)
-        text_cfg2['context_length'] = 58
-        text_cfg2['no_causal_mask'] = True
-        text_cfg2['pool_type'] = 'none'
-        text_cfg2['embed_cls'] = False
-        self.pad_id = 0
 
-        self.text2 = _build_text_tower(embed_dim, text_cfg2, quick_gelu, cast_dtype)
+        # copying the original text encoder
+        self.text2 = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
         self.transformer2 = self.text2.transformer
         self.context_length2 = self.text2.context_length
         self.vocab_size2 = self.text2.vocab_size
@@ -316,11 +258,6 @@ class CLIP(nn.Module):
         self.text_projection2 = self.text2.text_projection
         self.text_pool_type2 = self.text2.pool_type
 
-        # MLP HEAD (OPENVLA-OFT)
-        self.action_head = MLPResNet(
-            num_blocks=2, input_dim=1024*7, hidden_dim=1024, output_dim=7
-        )
-        self.num_action_chunk = 8
 
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         if init_logit_bias is not None:
@@ -357,31 +294,29 @@ class CLIP(nn.Module):
                 x = self.text_projection(x)
             else:
                 x = x @ self.text_projection
+
         return F.normalize(x, dim=-1) if normalize else x
 
-    def decode_action(self, text, img, inst, normalize: bool = False):
+    def encode_text2(self, text, normalize: bool = False):
         cast_dtype = self.transformer2.get_cast_dtype()
 
         x = self.token_embedding2(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-        # concatenate context vectors
-        img = img.unsqueeze(1)
-        inst = inst.unsqueeze(1)
-        x = torch.cat((img, inst, x), dim=1) 
 
         x = x + self.positional_embedding2.to(cast_dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer2(x, attn_mask=None)
+        x = self.transformer2(x, attn_mask=self.attn_mask)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final2(x)  # [batch_size, n_ctx, transformer.width]
-        x, _ = text_global_pool(x, text, self.text_pool_type2)
+        x, _ = text_global_pool(x, text, self.text_pool_type)
         if self.text_projection2 is not None:
             if isinstance(self.text_projection2, nn.Linear):
                 x = self.text_projection2(x)
             else:
                 x = x @ self.text_projection2
         return F.normalize(x, dim=-1) if normalize else x
-
-
+    
+    
+    
     def get_logits(self, image, text):
         image_features = self.encode_image(image, normalize=True)
         text_features = self.encode_text(text, normalize=True)
@@ -397,26 +332,18 @@ class CLIP(nn.Module):
             text: Optional[torch.Tensor] = None,
             text_supervision: Optional[torch.Tensor] = None,
     ):
-        image_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
-
-        dummy_tokens = torch.full((image_features.shape[0], 56), self.pad_id).to(device=image_features.device)
-        out_features = self.decode_action(dummy_tokens, image_features, text_features) # [32, 58, 1024]
-
-        batch_size = out_features.shape[0]
-        out_features = out_features[:, 2:, :] # [32, 56, 1024]
-        out_features = out_features.reshape(batch_size, self.num_action_chunk, -1)
-        action = self.action_head(out_features)        
-        #text_supervision_features = self.encode_text2(text_supervision, normalize=True) if text_supervision is not None else None    
+        image_features = self.encode_image(image, normalize=False) if image is not None else None
+        text_features = self.encode_text(text, normalize=False) if text is not None else None
+        text_supervision_features = self.encode_text2(text_supervision, normalize=False) if text_supervision is not None else None
 
         if self.output_dict:
             out_dict = {
-                "image_features": action,
+                "image_features": image_features,
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp()
             }
             if text_supervision is not None:
-                out_dict['text_supervision_features'] = None
+                out_dict['text_supervision_features'] = text_supervision_features
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
             return out_dict
@@ -424,7 +351,6 @@ class CLIP(nn.Module):
         if self.logit_bias is not None:
             return image_features, text_features, self.logit_scale.exp(), self.logit_bias
         return image_features, text_features, self.logit_scale.exp()
-
 
 class CustomTextCLIP(nn.Module):
     output_dict: torch.jit.Final[bool]

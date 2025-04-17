@@ -43,9 +43,18 @@ def get_clip_rt(
     # Load action lookup table
     
     kmeans_num = model_path.split("kmeans_")[-1].split("_epoch")[0]
+    command_to_action_path = "json_inference/inference/{}_command_to_action_kmeans_{}_nonzero.json".format(task_split, kmeans_num)
+    return model, preprocess, None, None
+
     lookup_table = json.load(
-        open("json_inference/inference/{}_command_to_action_kmeans_{}.json".format(task_split, kmeans_num))
+        open(command_to_action_path, "r")
     )
+    print("**" * 10)
+    print("**" * 10)
+    print(command_to_action_path)
+    print("**" * 10)
+    print("**" * 10)
+    
     action_classes = list(lookup_table.keys())
 
     print("INITIAL ACTION CLASSES", action_classes)
@@ -142,23 +151,24 @@ def _get_clip_rt_action(
             final_vector += action_vector
 
         # 만약 최종 벡터의 모든 element가 0.0이면 두 번째로 높은 확률 액션으로 재계산
-        if zero_action_exception:
-            if np.all(final_vector[:-1] == 0.0):
-                print("!!!zero action!!!\n inferring the second best action...")
-                final_vector = np.zeros(7)
-                for group_name, indices in groups.items():
-                    group_probs = action_probs_np[indices]
-                    sorted_indices = np.argsort(group_probs)[::-1]
-                    second_best_idx = indices[sorted_indices[1]]
-                    action_str = action_classes[second_best_idx]
-                    action_vector = np.array(json.loads(lookup_table[action_str]))
-                    final_vector += action_vector
-                final_vector[-1] = 0.0
-                final_vector[-2] = 0.0
-                final_vector[-3] = 0.0
-                final_vector[-4] = 0.0
-                # final_vector[0] = 0.0
-                # final_vector[1] = 0.0
+        # if zero_action_exception:
+        
+        if np.all(final_vector[:-1] == 0.0):
+            print("!!!zero action!!!\n inferring the second best action...")
+            final_vector = np.zeros(7)
+            for group_name, indices in groups.items():
+                group_probs = action_probs_np[indices]
+                sorted_indices = np.argsort(group_probs)[::-1]
+                second_best_idx = indices[sorted_indices[1]]
+                action_str = action_classes[second_best_idx]
+                action_vector = np.array(json.loads(lookup_table[action_str]))
+                final_vector += action_vector
+            final_vector[-1] = 0.0
+            final_vector[-2] = 0.0
+            final_vector[-3] = 0.0
+            final_vector[-4] = 0.0
+            # final_vector[0] = 0.0
+            # final_vector[1] = 0.0
 
         pred = final_vector.tolist()
 
@@ -167,4 +177,43 @@ def _get_clip_rt_action(
     assert len(pred) == 7
 
     pred = np.array(pred)
+    return pred
+
+
+def _get_clip_rt_action_reg(
+    model,
+    preprocess,
+    tokenizer,
+    action_classes,
+    lookup_table,
+    image: Image.Image,
+    task_label: str,
+    zero_action_exception: bool,
+    device=DEVICE
+) -> list[list[float]]:
+    """Generates an action with the CLIP-RT policy."""
+
+    image = preprocess(image).unsqueeze(0).to(device)
+    inst = tokenizer(CLIP_RT_PROMPT.format(task_label)).to(device)
+
+    with torch.no_grad(), torch.amp.autocast("cuda"):
+        image_features = model.encode_image(image, normalize=True)
+        text_features = model.encode_text(inst, normalize=True)
+        
+        dummy_tokens = torch.full((image_features.shape[0], 56), model.pad_id).to(device=image_features.device)
+        out_features = model.decode_action(dummy_tokens, image_features, text_features)
+        
+        batch_size = out_features.shape[0]
+        out_features = out_features[:, 2:, :] # [32, 56, 1024]
+        out_features = out_features.reshape(batch_size, model.num_action_chunk, -1)
+        action = model.action_head(out_features)
+        
+        pred = action.squeeze(0).cpu().numpy().tolist()
+
+    assert isinstance(pred, list)
+    assert isinstance(pred[0], list)
+    assert isinstance(pred[0][0], float)
+    assert len(pred) == 8
+    assert len(pred[0]) == 7
+
     return pred

@@ -32,7 +32,7 @@ import numpy as np
 import tqdm
 from libero.libero import benchmark
 
-import wandb
+# import wandb
 
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
@@ -83,22 +83,10 @@ class GenerateConfig:
     data_portion: int = 10
     save_video: str = "y"
     model_ckpt: str = "1"
-    model_kmeans: int = 32
     zero_action_exception: bool = True
-    del_zero_action: bool = True
-    # model_path: str = "./checkpoints/cliprt_libero_{}_kmeans_{}_epoch_{}.pt".format(
-    #     task_suite_name.split("_")[-1], model_kmeans, model_ckpt
+    # model_path: str = "/data/jhkim/cliprt/ckpt/{}/epoch_{}.pt".format(
+    #     task_suite_name.split("_")[-1], model_ckpt
     # )
-    @property
-    def model_path(self) -> str:
-        if self.del_zero_action:
-            return "/data/jhkim/cliprt/ckpt/cliprt_libero_{}_kmeans_{}_epoch_{}_nonzero.pt".format(
-                self.task_suite_name.split("_")[-1], self.model_kmeans, self.model_ckpt
-            )
-        else:
-            return "/data/jhkim/cliprt/ckpt/cliprt_libero_{}_kmeans_{}_epoch_{}_zero.pt".format(
-                self.task_suite_name.split("_")[-1], self.model_kmeans, self.model_ckpt
-            )
     #################################################################################################################
     # Utils
     #################################################################################################################
@@ -115,11 +103,15 @@ class GenerateConfig:
 @draccus.wrap()
 
 def eval_libero(cfg: GenerateConfig) -> None:
+
+    model_path = "/data/jhkim/cliprt/ckpt/cliprt_libero_{}_reg_epoch_{}.pt".format(
+        cfg.task_suite_name.split("_")[-1], cfg.model_ckpt
+    )
+
     lines = []
     lines.append(str(cfg.model_family))
     lines.append(f"model epoch: {cfg.model_ckpt}")
-    lines.append(f"K-means: {cfg.model_kmeans}")
-    lines.append(f"Model path: {cfg.model_path}")
+    lines.append(f"Model path: {model_path}")
     lines.append(f"Data portion: {100 / cfg.data_portion}%")
     lines.append(f"Zero action exception: {cfg.zero_action_exception}")
 
@@ -147,17 +139,17 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
     if cfg.model_family == "clip_rt":
         model, preprocess, action_classes, lookup_table = get_clip_rt(
-            model_path=cfg.model_path,
+            model_path=model_path,
             task_split=cfg.task_suite_name,
         )
         tokenizer = get_tokenizer()
 
     # Initialize local logging
-    mm = cfg.model_path.split("epoch_")[-1]
+    mm = model_path.split("epoch_")[-1]
     run_id = f"EVAL-{cfg.model_family}-{mm}-{DATE_TIME}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
-    log_dir = os.path.join(cfg.local_log_dir,cfg.task_suite_name,str(cfg.model_kmeans))
+    log_dir = os.path.join(cfg.local_log_dir,"ac",cfg.task_suite_name)
     os.makedirs(log_dir, exist_ok=True)
     local_log_filepath = os.path.join(log_dir, run_id + ".txt")
     log_file = open(local_log_filepath, "w")
@@ -179,7 +171,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
 
     # Get expected image dimensions
-    if cfg.model_family == "openvla":ƒ
+    if cfg.model_family == "openvla":
         resize_size = get_image_resize_size(cfg)
     elif cfg.model_family == "clip_rt":
         resize_size = 224
@@ -253,7 +245,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     img = get_libero_image(obs, resize_size)
 
                     # Save preprocessed image for replay video
-                    replay_images.append(img)
+                    # replay_images.append(img)
 
                     # Prepare observations dict
                     # Note: OpenVLA does not take proprio state as input
@@ -267,62 +259,44 @@ def eval_libero(cfg: GenerateConfig) -> None:
                             )
                         ),
                     }
+                    action_chunks = get_clip_rt_action(
+                        model,
+                        preprocess,
+                        tokenizer,
+                        action_classes,
+                        lookup_table,
+                        observation,
+                        task_description,
+                        zero_action_exception = cfg.zero_action_exception
+                    )
 
-                    # Query model to get action
-                    if cfg.model_family == "openvla":
-                        action = get_action(
-                            cfg,
-                            model,
-                            observation,
-                            task_description,
-                            processor=processor,
-                        )
-                        # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
-                        action = normalize_gripper_action(action, binarize=True)
-                    elif cfg.model_family == "clip_rt":
-                        action = get_clip_rt_action(
-                            model,
-                            preprocess,
-                            tokenizer,
-                            action_classes,
-                            lookup_table,
-                            observation,
-                            task_description,
-                            zero_action_exception = cfg.zero_action_exception
-                        )
-                        # HANDLING REPEATING ACTION
-                        # if prev_action is not None and np.allclose(
-                        #     action, prev_action, atol=1e-10
-                        # ):
-                        #     repeat_count += 1
-                        # else:
-                        #     repeat_count = 1
-                        # prev_action = action.copy()
+                    print(f"Action_chunks: {action_chunks}")
+                    log_file.write(f"Action_chunks: {action_chunks}\n")
+                    actions.extend(action_chunks)
 
-                        # if repeat_count >= 15:
-                        #     print("REPEATING ACTIONS!!!!!")
-                        #     action = np.array([-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
-                        #     for dumb in range(15):
-                        #         obs, reward, done, info = env.step(action.tolist())
-                        #     repeat_count == 0
-                        print(f"Action: {action}")
-                        log_file.write(f"Action: {action}\n")
-                        actions.append(action.tolist())
-
-                    # [OpenVLA] The dataloader flips the sign of the gripper action to align with other datasets
-                    # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
-                    if cfg.model_family == "openvla":
-                        action = invert_gripper_action(action)
-                    # elif cfg.model_family == "clip_rt":
-                    #     action = invert_gripper_action(action)
+                    done_flag = False
 
                     # Execute action in environment
-                    obs, reward, done, info = env.step(action.tolist())
-                    if done:
+                    for action_chunk in action_chunks:
+                        # action_chunk = normalize_gripper_action(action_chunk, binarize=True)
+                        # action_chunk = invert_gripper_action(action_chunk)
+                        
+                        # Get preprocessed image
+                        img = get_libero_image(obs, resize_size)
+
+                        # Save preprocessed image for replay video
+                        replay_images.append(img)
+                        obs, reward, done, info = env.step(action_chunk)
+                        if done:
+                            done_flag = True
+                            break
+                        t += 1
+                        
+                    if done_flag:
                         task_successes += 1
                         total_successes += 1
                         break
-                    t += 1
+                    
 
                 except Exception as e:
                     import traceback
