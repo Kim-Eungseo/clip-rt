@@ -59,6 +59,10 @@ def get_tokenizer(model_name="ViT-H-14-378-quickgelu"):
     return open_clip.get_tokenizer(model_name)
 
 
+# Global variables to cache features
+ACTION_FEATURES = None
+ENCODED_TEXT_LOOKUP = {}
+
 
 def _get_clip_rt_action(
     model,
@@ -72,21 +76,30 @@ def _get_clip_rt_action(
     device=DEVICE
 ) -> list[float]:
     """Generates an action with the CLIP-RT policy."""
+    global ACTION_FEATURES
+    
+    start_time = time.time()
 
     # Process image
     image = preprocess(image).unsqueeze(0).to(device)
 
     # Process text inputs and move to correct device
     inst = tokenizer(CLIP_RT_PROMPT.format(task_label)).to(device)
-    actions = tokenizer(action_classes).to(device)
+    
 
     # Get features and compute probabilities
     with torch.no_grad(), torch.amp.autocast("cuda"):
-        image_features = model.encode_image(image)
-        inst_features = model.encode_text(inst)
-        context_features = image_features + inst_features
-        action_features = model.encode_text2(actions)
 
+        if ACTION_FEATURES is None:
+            ACTION_FEATURES = model.encode_text2(tokenizer(action_classes).to(device))
+
+        image_features = model.encode_image(image)
+        if inst not in ENCODED_TEXT_LOOKUP:
+            ENCODED_TEXT_LOOKUP[inst] = model.encode_text(inst)
+        inst_features = ENCODED_TEXT_LOOKUP[inst]
+        context_features = image_features + inst_features
+        
+        action_features = ACTION_FEATURES
         context_features /= context_features.norm(dim=-1, keepdim=True)
         action_features /= action_features.norm(dim=-1, keepdim=True)
         action_probs = (context_features @ action_features.T).sigmoid()
@@ -167,4 +180,8 @@ def _get_clip_rt_action(
     assert len(pred) == 7
 
     pred = np.array(pred)
+    
+    end_time = time.time()
+    print(f"Runtime: {end_time - start_time:.4f} seconds")
+    
     return pred
