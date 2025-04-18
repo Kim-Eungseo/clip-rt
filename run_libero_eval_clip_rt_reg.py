@@ -19,6 +19,7 @@ Usage:
 
 import os
 import sys
+import time
 
 sys.path.append("./openvla-clip-rt")
 sys.path.append("./openvla-clip-rt/LIBERO")
@@ -83,6 +84,7 @@ class GenerateConfig:
     data_portion: int = 10
     save_video: str = "y"
     model_ckpt: str = "1"
+    chunk_cut: int = 8
     zero_action_exception: bool = True
     # model_path: str = "/data/jhkim/cliprt/ckpt/{}/epoch_{}.pt".format(
     #     task_suite_name.split("_")[-1], model_ckpt
@@ -104,7 +106,7 @@ class GenerateConfig:
 
 def eval_libero(cfg: GenerateConfig) -> None:
 
-    model_path = "/data/jhkim/cliprt/ckpt/cliprt_libero_{}_reg_epoch_{}.pt".format(
+    model_path = "/data/jhkim/cliprt/cliprt_libero_{}_reg_epoch_{}.pt".format(
         cfg.task_suite_name.split("_")[-1], cfg.model_ckpt
     )
 
@@ -196,6 +198,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
+        tot_inf_time = 0 
+        tot_steps = 0
+
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
             if episode_idx % cfg.data_portion != 0:
                 continue
@@ -259,6 +264,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
                             )
                         ),
                     }
+                    
+                    stime = time.time()
+
                     action_chunks = get_clip_rt_action(
                         model,
                         preprocess,
@@ -269,15 +277,22 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         task_description,
                         zero_action_exception = cfg.zero_action_exception
                     )
+                    etime = time.time()
+                    runtime = etime-stime
+                    tot_inf_time += runtime
+                    tot_steps += 1
 
-                    print(f"Action_chunks: {action_chunks}")
+                    # print(f"Action_chunks: {action_chunks}")
+                    
                     log_file.write(f"Action_chunks: {action_chunks}\n")
                     actions.extend(action_chunks)
 
                     done_flag = False
 
                     # Execute action in environment
-                    for action_chunk in action_chunks:
+                    for cut, action_chunk in enumerate(action_chunks):
+                        # if cut > cfg.chunk_cut-1:
+                        #     break
                         # action_chunk = normalize_gripper_action(action_chunk, binarize=True)
                         # action_chunk = invert_gripper_action(action_chunk)
                         
@@ -342,6 +357,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
             )
             print("model epoch_{}".format(cfg.model_ckpt))
+            print("chunk cut: {}".format(cfg.chunk_cut))
 
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
@@ -349,15 +365,19 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
             )
             log_file.write("model epoch_{}\n".format(cfg.model_ckpt))
+            log_file.write("chunk cut: {}".format(cfg.chunk_cut))
             log_file.flush()
 
         # Log final results
+        print("latency (sec): {}".format(float(tot_inf_time)/int(tot_steps)))
+
         print(
             f"Current task success rate: {float(task_successes) / float(task_episodes)}"
         )
         print(
             f"Current total success rate: {float(total_successes) / float(total_episodes)}"
         )
+        log_file.write("latency (sec): {}\n".format(float(tot_inf_time)/int(tot_steps)))
         log_file.write(
             f"Current task success rate: {float(task_successes) / float(task_episodes)}\n"
         )
